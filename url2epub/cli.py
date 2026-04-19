@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import shlex
 from pathlib import Path
+import threading
+import time
 import subprocess
 import sys
 
@@ -16,8 +18,99 @@ from .core import (
 )
 
 
-def progress(message: str) -> None:
-    print(message, file=sys.stderr)
+class ProgressReporter:
+    def __init__(self, stream: object | None = None) -> None:
+        self.stream = sys.stderr if stream is None else stream
+        self.enabled = bool(
+            hasattr(self.stream, "isatty") and self.stream.isatty() and hasattr(self.stream, "write")
+        )
+        self._frames = ["|", "/", "-", "\\"]
+        self._message = ""
+        self._frame_index = 0
+        self._active = False
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def info(self, message: str) -> None:
+        if self.enabled:
+            self._clear_line()
+        print(message, file=self.stream)
+
+    def start(self, message: str) -> None:
+        if not self.enabled:
+            self.info(message)
+            return
+
+        self.stop()
+        self._message = message
+        self._frame_index = 0
+        self._active = True
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+
+    def update(self, message: str) -> None:
+        if not self.enabled:
+            return
+        with self._lock:
+            self._message = message
+
+    def stop(self, final_message: str | None = None) -> None:
+        thread = self._thread
+        if thread is not None:
+            self._stop_event.set()
+            thread.join()
+            self._thread = None
+
+        was_active = self._active
+        self._active = False
+        if self.enabled and was_active:
+            self._clear_line()
+
+        if final_message:
+            print(final_message, file=self.stream)
+
+    def _spin(self) -> None:
+        while not self._stop_event.is_set():
+            with self._lock:
+                frame = self._frames[self._frame_index % len(self._frames)]
+                message = self._message
+                self._frame_index += 1
+            self.stream.write(f"\r\033[2K{frame} {message}")
+            self.stream.flush()
+            time.sleep(0.1)
+
+    def _clear_line(self) -> None:
+        self.stream.write("\r\033[2K")
+        self.stream.flush()
+
+
+def format_duration(seconds: float) -> str:
+    if seconds < 1:
+        return f"{seconds:.1f}s"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+
+    minutes, remainder = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{int(minutes)}m {remainder:.1f}s"
+
+    hours, minutes = divmod(int(minutes), 60)
+    return f"{hours}h {minutes}m"
+
+
+def render_progress_bar(completed: int, total: int, width: int = 20) -> str:
+    if total <= 0:
+        return "[--------------------]"
+
+    filled = round((completed / total) * width)
+    filled = max(0, min(width, filled))
+    return f"[{'#' * filled}{'-' * (width - filled)}]"
+
+
+def format_batch_progress(completed: int, total: int, elapsed_seconds: float) -> str:
+    return f"{completed}/{total} complete {render_progress_bar(completed, total)} ({format_duration(elapsed_seconds)})"
 
 
 def choose_output_path(requested_output: str | None, inferred_output: str) -> str:
@@ -99,10 +192,14 @@ def run_convert(args: argparse.Namespace) -> int:
         print("error: at least one URL is required", file=sys.stderr)
         return 2
 
+    reporter = ProgressReporter()
     articles = []
     total = len(args.urls)
+    batch_started_at = time.perf_counter()
     for index, url in enumerate(args.urls, start=1):
-        progress(f"[{index}/{total}] Extracting {url}")
+        prefix = f"[{index}/{total}]"
+        reporter.start(f"{prefix} Extracting {url}")
+        started_at = time.perf_counter()
         try:
             article = extract_url(
                 url,
@@ -110,9 +207,14 @@ def run_convert(args: argparse.Namespace) -> int:
                 allow_fallback=args.allow_fallback,
             )
             articles.append(article)
-            progress(f'[{index}/{total}] Detected title: "{article.title}"')
+            elapsed = format_duration(time.perf_counter() - started_at)
+            reporter.stop(f'{prefix} Detected title: "{article.title}" ({elapsed})')
+            batch_elapsed = time.perf_counter() - batch_started_at
+            reporter.info(format_batch_progress(index, total, batch_elapsed))
         except Exception as exc:
-            print(f"error: failed to process {url}: {exc}", file=sys.stderr)
+            elapsed = format_duration(time.perf_counter() - started_at)
+            reporter.stop()
+            print(f"error: failed to process {url} after {elapsed}: {exc}", file=sys.stderr)
             return 1
 
     output = choose_output_path(
@@ -121,11 +223,12 @@ def run_convert(args: argparse.Namespace) -> int:
     )
     book_title = args.title or (articles[0].title if len(articles) == 1 else None)
     if book_title:
-        progress(f'Book title: "{book_title}"')
+        reporter.info(f'Book title: "{book_title}"')
     else:
-        progress("Book title: using Pandoc/default multi-article title behavior")
-    progress(f"Output: {output}")
-    progress(f"[build] Generating EPUB with Pandoc")
+        reporter.info("Book title: using Pandoc/default multi-article title behavior")
+    reporter.info(f"Output: {output}")
+    reporter.start("[build] Generating EPUB with Pandoc")
+    build_started_at = time.perf_counter()
 
     path = build_epub(
         articles,
@@ -133,7 +236,8 @@ def run_convert(args: argparse.Namespace) -> int:
         book_title=args.title,
         language=args.language,
     )
-    progress(f"[done] Wrote {path}")
+    build_elapsed = format_duration(time.perf_counter() - build_started_at)
+    reporter.stop(f"[Done] Wrote {path} ({build_elapsed})")
     print(path)
     return 0
 
