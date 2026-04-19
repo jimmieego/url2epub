@@ -32,7 +32,17 @@ pandoc --version
 url2epub doctor
 ```
 
-If `url2epub doctor` says Pandoc is missing even after installation, the most common cause is that Pandoc was installed somewhere that is not on your shell's `PATH`. Restarting your terminal usually fixes that; otherwise, add the Pandoc install location to `PATH` and try again.
+If `url2epub doctor` says Pandoc is missing even after installation, the most common cause is that Pandoc was installed somewhere that is not on your shell's `PATH`. Restarting your terminal usually fixes that; otherwise, add the Pandoc install location to `PATH` and try again. For example:
+
+```bash
+# macOS / Linux
+export PATH="/path/to/pandoc/bin:$PATH"
+```
+
+```powershell
+# Windows PowerShell
+$env:Path = "C:\path\to\pandoc;" + $env:Path
+```
 
 ## Install
 
