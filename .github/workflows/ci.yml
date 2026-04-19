@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Pandoc
+        run: sudo apt-get update && sudo apt-get install -y pandoc
+
+      - name: Install project
+        run: python -m pip install -e .
+
+      - name: Install Defuddle
+        run: npm install
+
+      - name: Run doctor
+        env:
+          URL2EPUB_DEFUDDLE_CMD: "npx --yes defuddle"
+        run: python -m url2epub.cli doctor
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v

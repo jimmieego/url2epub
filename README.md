@@ -37,6 +37,12 @@ Convert a single URL:
 url2epub "https://example.com/article"
 ```
 
+The explicit subcommand form also works:
+
+```bash
+url2epub convert "https://example.com/article"
+```
+
 The CLI shows progress in the terminal and prints the detected article title as it processes each URL. If you do not pass `--title`, the default output filename is inferred from the extracted title.
 
 If the inferred EPUB filename already exists, `url2epub` now automatically picks a numbered filename like `article-title-2.epub` to avoid accidental reuse during repeated imports into reader apps such as Apple Books.
@@ -56,6 +62,40 @@ url2epub \
   "https://example.com/1" \
   "https://example.com/2"
 ```
+
+Check whether the required tools are installed:
+
+```bash
+url2epub doctor
+```
+
+The `doctor` command checks:
+- `pandoc`
+- `defuddle`
+- `wechat-article-to-markdown` if present
+
+It exits non-zero when the required core tools are missing.
+
+## Development
+
+Run the test suite locally:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Refresh the installed `pipx` CLI after local code changes:
+
+```bash
+pipx install --force .
+```
+
+GitHub Actions runs the same basic checks on pushes and pull requests:
+- install the package
+- install Defuddle with npm
+- install Pandoc
+- run `url2epub doctor`
+- run the unit tests
 
 ## Notes
 
