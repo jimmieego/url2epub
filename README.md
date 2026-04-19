@@ -2,20 +2,54 @@
 
 `url2epub` is a small Python CLI that fetches one or more web pages, extracts readable article content, and packages the result as an EPUB.
 
+## Requirements
+
+`url2epub` depends on a few external tools:
+
+- `pandoc` to generate the final EPUB file
+- `defuddle` for the default article extraction path
+- `wechat-article-to-markdown` for WeChat articles on `mp.weixin.qq.com` when you want that support
+
+Pandoc must be installed and available on your `PATH`, because `url2epub` shells out to it during EPUB generation.
+
+Common Pandoc installation options:
+
+```bash
+# macOS (Homebrew)
+brew install pandoc
+
+# Debian / Ubuntu
+sudo apt-get install pandoc
+
+# Windows (winget)
+winget install --id JohnMacFarlane.Pandoc -e
+```
+
+After installing Pandoc, verify that your shell can find it:
+
+```bash
+pandoc --version
+url2epub doctor
+```
+
+If `url2epub doctor` says Pandoc is missing even after installation, the most common cause is that Pandoc was installed somewhere that is not on your shell's `PATH`. Restarting your terminal usually fixes that; otherwise, add the Pandoc install location to `PATH` and try again.
+
 ## Install
+
+Install the Python CLI and the default extractor:
 
 ```bash
 pipx install .
 npm install -g defuddle
 ```
 
-`pandoc` must also be installed and available on your `PATH`.
-
 If you prefer not to install Defuddle globally, set `URL2EPUB_DEFUDDLE_CMD` to the command you want `url2epub` to run.
 
 ```bash
 export URL2EPUB_DEFUDDLE_CMD="npx --yes defuddle"
 ```
+
+## Optional WeChat Support
 
 WeChat article support is detected automatically for `mp.weixin.qq.com` URLs and uses `wechat-article-to-markdown` when available.
 
