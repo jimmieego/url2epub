@@ -28,13 +28,21 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y pandoc
 
       - name: Install project
-        run: python -m pip install -e .
+        run: python3 -m pip install -e .
+
+      - name: Show tool versions
+        run: |
+          python3 --version
+          python3 -m pip --version
+          node --version
+          npm --version
+          pandoc --version | head -n 1
 
       - name: Install Defuddle
         run: npm ci
 
       - name: Run doctor
-        run: python -m url2epub.cli doctor
+        run: python3 -m url2epub.cli doctor
 
       - name: Run tests
-        run: python -m unittest discover -s tests -v
+        run: python3 -m unittest discover -s tests -v
