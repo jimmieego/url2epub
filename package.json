@@ -1,0 +1,7 @@
+{
+  "name": "url2epub-tools",
+  "private": true,
+  "dependencies": {
+    "defuddle": "^0.6.6"
+  }
+}

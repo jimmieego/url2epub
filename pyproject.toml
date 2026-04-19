@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "url2epub"
+version = "0.1.0"
+description = "Convert one or more web URLs into an EPUB book."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+  { name = "OpenAI Codex" }
+]
+dependencies = [
+]
+
+[project.scripts]
+url2epub = "url2epub.cli:main"
+
+[tool.setuptools]
+packages = ["url2epub"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

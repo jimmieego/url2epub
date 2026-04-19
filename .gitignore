@@ -1,0 +1,9 @@
+.DS_Store
+.venv/
+__pycache__/
+*.pyc
+*.epub
+build/
+dist/
+node_modules/
+url2epub.egg-info/
