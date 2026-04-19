@@ -6,6 +6,9 @@ on:
       - main
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -36,7 +39,7 @@ jobs:
           python3 -m pip --version
           node --version
           npm --version
-          pandoc --version | head -n 1
+          pandoc --version
 
       - name: Install Defuddle
         run: npm ci
