@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -37,7 +38,7 @@ def choose_output_path(requested_output: str | None, inferred_output: str) -> st
         index += 1
 
 
-def run_and_capture_version(command: list[str]) -> str | None:
+def probe_command(command: list[str]) -> tuple[bool, str | None]:
     try:
         completed = subprocess.run(
             [*command, "--version"],
@@ -47,12 +48,12 @@ def run_and_capture_version(command: list[str]) -> str | None:
             timeout=10,
         )
     except Exception:
-        return None
+        return False, None
 
     output = (completed.stdout or completed.stderr).strip()
     if not output:
-        return None
-    return output.splitlines()[0]
+        return True, None
+    return True, output.splitlines()[0]
 
 
 def doctor_check(label: str, command: list[str] | None, required: bool = True) -> bool:
@@ -62,8 +63,13 @@ def doctor_check(label: str, command: list[str] | None, required: bool = True) -
         print(f"[{state}] {label} ({suffix})")
         return not required
 
-    version = run_and_capture_version(command)
-    rendered = " ".join(command)
+    healthy, version = probe_command(command)
+    rendered = shlex.join(command)
+    if not healthy:
+        state = "broken"
+        suffix = "required" if required else "optional"
+        print(f"[{state}] {label}: {rendered} ({suffix})")
+        return not required
     if version:
         print(f"[ok] {label}: {rendered} ({version})")
     else:
@@ -154,34 +160,52 @@ def add_convert_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_root_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="url2epub",
         description="Fetch one or more URLs and package them into an EPUB.",
     )
-    subparsers = parser.add_subparsers(dest="command")
-
-    convert_parser = subparsers.add_parser(
-        "convert",
-        help="Fetch one or more URLs and build an EPUB.",
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("convert", "doctor"),
+        help="Optional subcommand. Omit it to use the default convert behavior.",
     )
-    add_convert_arguments(convert_parser)
+    return parser
 
-    subparsers.add_parser(
-        "doctor",
-        help="Check whether Pandoc and extraction helpers are installed.",
+
+def build_convert_parser(prog: str = "url2epub") -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description="Fetch one or more URLs and package them into an EPUB.",
     )
-
     add_convert_arguments(parser)
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+def build_doctor_parser() -> argparse.ArgumentParser:
+    return argparse.ArgumentParser(
+        prog="url2epub doctor",
+        description="Check whether Pandoc and extraction helpers are installed.",
+    )
 
-    if args.command == "doctor":
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    if argv and argv[0] == "doctor":
+        build_doctor_parser().parse_args(argv[1:])
         return run_doctor()
+
+    if argv and argv[0] == "convert":
+        args = build_convert_parser("url2epub convert").parse_args(argv[1:])
+        return run_convert(args)
+
+    if argv and argv[0] in {"-h", "--help"}:
+        build_root_parser().print_help()
+        return 0
+
+    args = build_convert_parser().parse_args(argv)
     return run_convert(args)
 
 
