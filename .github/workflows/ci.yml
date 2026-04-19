@@ -42,7 +42,7 @@ jobs:
           pandoc --version
 
       - name: Install Defuddle
-        run: npm ci
+        run: npm install -g defuddle
 
       - name: Run doctor
         run: python3 -m url2epub.cli doctor
