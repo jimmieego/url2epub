@@ -22,6 +22,8 @@ USER_AGENT = (
     "Chrome/124.0.0.0 Safari/537.36"
 )
 
+EPUB_AUTHOR = "URL2EPUB"
+
 BLOCKED_TAGS = {
     "script",
     "style",
@@ -304,6 +306,8 @@ def build_epub(
             str(css_path),
             "--metadata",
             f"title={title}",
+            "--metadata",
+            f"author={EPUB_AUTHOR}",
             "--metadata",
             f"lang={language}",
             "--resource-path",

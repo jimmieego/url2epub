@@ -6,6 +6,7 @@ from unittest.mock import patch
 from url2epub.core import (
     DefuddleError,
     WechatToolError,
+    build_epub,
     default_output_name,
     extract_article,
     extract_url,
@@ -154,6 +155,25 @@ class CoreTests(unittest.TestCase):
                 allow_fallback=True,
             )
         self.assertEqual(article.title, "Fallback")
+
+    def test_build_epub_sets_fixed_author_metadata(self) -> None:
+        article = Article(
+            title="Example Story",
+            source_url="https://example.com/story",
+            author="Ada Lovelace",
+            content_html="<p>Example content.</p>",
+        )
+
+        with TemporaryDirectory() as tmpdir, patch(
+            "url2epub.core.pandoc_command",
+            return_value=["pandoc"],
+        ), patch("url2epub.core.subprocess.run") as run_mock:
+            output = build_epub([article], Path(tmpdir) / "book.epub")
+
+        self.assertEqual(output, Path(tmpdir) / "book.epub")
+        command = run_mock.call_args.args[0]
+        self.assertIn("author=URL2EPUB", command)
+        self.assertNotIn("author=Ada Lovelace", command)
 
 
 if __name__ == "__main__":
