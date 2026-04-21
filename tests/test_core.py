@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
+import subprocess
 
 from url2epub.core import (
     DefuddleError,
@@ -15,6 +16,7 @@ from url2epub.core import (
     replace_unsupported_embeds,
     slugify,
     Article,
+    render_article_markdown,
 )
 
 
@@ -156,6 +158,44 @@ class CoreTests(unittest.TestCase):
             )
         self.assertEqual(article.title, "Fallback")
 
+    def test_extract_wechat_article_reads_reported_markdown_path(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            output_root = Path(tmpdir) / "site-packages" / "output" / "Example"
+            output_root.mkdir(parents=True)
+            markdown_path = output_root / "Example.md"
+            markdown_path.write_text("# Example\n\nBody", encoding="utf-8")
+            images_dir = output_root / "images"
+            images_dir.mkdir()
+            (images_dir / "img_001.png").write_bytes(b"png")
+
+            executable = Path(tmpdir) / "wechat-article-to-markdown"
+            executable.write_text(f"#!{Path(tmpdir) / 'venv' / 'bin' / 'python'}\n", encoding="utf-8")
+
+            with patch(
+                "url2epub.core.wechat_tool_command",
+                return_value=["wechat-article-to-markdown"],
+            ), patch(
+                "url2epub.core.resolve_command_path",
+                return_value=executable,
+            ), patch(
+                "url2epub.core.Path.glob",
+                wraps=Path.glob,
+            ), patch(
+                "url2epub.core.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=["wechat-article-to-markdown", "https://mp.weixin.qq.com/s/example"],
+                    returncode=0,
+                    stdout=f"✅ 已保存: {markdown_path}\n",
+                    stderr="",
+                ),
+            ):
+                article = extract_url("https://mp.weixin.qq.com/s/example")
+
+        self.assertEqual(article.title, "Example")
+        self.assertIn("Body", article.markdown_content or "")
+        self.assertIsNotNone(article.asset_dir)
+        self.assertTrue((article.asset_dir / "img_001.png").exists())
+
     def test_build_epub_sets_fixed_author_metadata(self) -> None:
         article = Article(
             title="Example Story",
@@ -174,6 +214,27 @@ class CoreTests(unittest.TestCase):
         command = run_mock.call_args.args[0]
         self.assertIn("author=URL2EPUB", command)
         self.assertNotIn("author=Ada Lovelace", command)
+
+    def test_render_article_markdown_strips_wechat_generated_header_block(self) -> None:
+        article = Article(
+            title="Example Story",
+            source_url="https://example.com/story",
+            markdown_content=(
+                "# Example Story\n\n"
+                "> 公众号: Example\n"
+                "> 发布时间: 2026-04-20 09:00\n"
+                "> 原文链接: https://example.com/story\n\n"
+                "---\n\n"
+                "Body paragraph.\n"
+            ),
+        )
+
+        rendered = render_article_markdown(article)
+
+        self.assertEqual(rendered.count("# Example Story"), 1)
+        self.assertIn("[Source](https://example.com/story)", rendered)
+        self.assertIn("Body paragraph.", rendered)
+        self.assertNotIn("> 公众号:", rendered)
 
 
 if __name__ == "__main__":

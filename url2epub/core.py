@@ -60,6 +60,88 @@ class WechatToolError(RuntimeError):
     """Raised when the WeChat-specific extraction tool is unavailable or fails."""
 
 
+def resolve_command_path(command_name: str) -> Path | None:
+    if "/" in command_name:
+        candidate = Path(command_name).expanduser()
+        if candidate.exists():
+            return candidate.resolve()
+        return None
+
+    resolved = shutil.which(command_name)
+    if not resolved:
+        return None
+    return Path(resolved).resolve()
+
+
+def wechat_output_roots(command: list[str], working_dir: Path) -> list[Path]:
+    roots = [working_dir / "output"]
+    executable = resolve_command_path(command[0])
+    if not executable:
+        return roots
+
+    try:
+        first_line = executable.read_text(encoding="utf-8").splitlines()[0]
+    except (OSError, UnicodeDecodeError, IndexError):
+        first_line = ""
+
+    if not first_line.startswith("#!"):
+        return roots
+
+    python_path = Path(first_line[2:].strip()).expanduser()
+    if not python_path.exists():
+        return roots
+
+    lib_dir = python_path.resolve().parents[1] / "lib"
+    for site_packages in lib_dir.glob("python*/site-packages"):
+        roots.append(site_packages / "output")
+
+    return roots
+
+
+def snapshot_markdown_files(roots: Iterable[Path]) -> dict[Path, int]:
+    files: dict[Path, int] = {}
+    for root in roots:
+        if not root.exists():
+            continue
+        for markdown_path in root.glob("*/*.md"):
+            try:
+                files[markdown_path] = markdown_path.stat().st_mtime_ns
+            except OSError:
+                continue
+    return files
+
+
+def parse_wechat_markdown_path(output: str) -> Path | None:
+    match = re.search(r"已保存:\s*(.+?\.md)\s*$", output, re.MULTILINE)
+    if not match:
+        return None
+
+    markdown_path = Path(match.group(1).strip())
+    if markdown_path.exists():
+        return markdown_path
+    return None
+
+
+def locate_wechat_markdown_file(
+    command: list[str],
+    working_dir: Path,
+    before: dict[Path, int],
+    stdout: str,
+    stderr: str,
+) -> Path | None:
+    reported_path = parse_wechat_markdown_path("\n".join(part for part in (stdout, stderr) if part))
+    if reported_path:
+        return reported_path
+
+    after = snapshot_markdown_files(wechat_output_roots(command, working_dir))
+    changed_files = [
+        path for path, mtime in after.items() if path not in before or before[path] != mtime
+    ]
+    if not changed_files:
+        return None
+    return max(changed_files, key=lambda path: after[path])
+
+
 def fetch_html(url: str, timeout: int = 20) -> str:
     request = Request(
         url,
@@ -139,8 +221,9 @@ def extract_wechat_article_from_url(url: str) -> Article:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
+        before = snapshot_markdown_files(wechat_output_roots(command, tmp))
         try:
-            subprocess.run(
+            completed = subprocess.run(
                 [*command, url],
                 cwd=tmp,
                 text=True,
@@ -158,11 +241,16 @@ def extract_wechat_article_from_url(url: str) -> Article:
         except subprocess.TimeoutExpired as exc:
             raise WechatToolError("wechat-article-to-markdown timed out.") from exc
 
-        markdown_files = sorted((tmp / "output").glob("*/*.md"))
-        if not markdown_files:
+        markdown_path = locate_wechat_markdown_file(
+            command,
+            tmp,
+            before,
+            completed.stdout or "",
+            completed.stderr or "",
+        )
+        if not markdown_path:
             raise WechatToolError("No Markdown output was produced for the WeChat article.")
 
-        markdown_path = markdown_files[0]
         title = clean_text(markdown_path.stem) or hostname_label(url)
         markdown_content = markdown_path.read_text(encoding="utf-8")
 
@@ -401,8 +489,30 @@ def render_markdown_article_html(article: Article, chapter_dir: Path) -> str:
     return completed.stdout.strip()
 
 
+def normalize_markdown_body(body: str, title: str) -> str:
+    lines = body.strip().splitlines()
+    if not lines:
+        return ""
+
+    if clean_text(lines[0]) == f"# {title}":
+        lines = lines[1:]
+        while lines and not lines[0].strip():
+            lines = lines[1:]
+        while lines and lines[0].startswith("> "):
+            lines = lines[1:]
+        while lines and not lines[0].strip():
+            lines = lines[1:]
+        if lines and lines[0].strip() == "---":
+            lines = lines[1:]
+        while lines and not lines[0].strip():
+            lines = lines[1:]
+
+    return "\n".join(lines).strip()
+
+
 def render_article_markdown(article: Article) -> str:
-    body = article.markdown_content or ""
+    raw_body = article.markdown_content or ""
+    body = normalize_markdown_body(raw_body, article.title)
     heading = f"# {article.title}"
     starts_with_heading = clean_text(body).startswith(f"# {article.title}")
 
