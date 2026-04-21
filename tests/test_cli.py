@@ -161,6 +161,21 @@ class CliTests(unittest.TestCase):
             output.getvalue(),
         )
 
+    def test_doctor_check_can_skip_probe_for_presence_only_command(self) -> None:
+        output = io.StringIO()
+        with patch("url2epub.cli.probe_command") as probe_command:
+            with redirect_stdout(output):
+                result = doctor_check(
+                    "WeChat extractor",
+                    ["wechat-article-to-markdown"],
+                    required=False,
+                    probe=False,
+                )
+
+        self.assertTrue(result)
+        probe_command.assert_not_called()
+        self.assertIn("[ok] WeChat extractor: wechat-article-to-markdown", output.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

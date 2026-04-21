@@ -149,15 +149,24 @@ def probe_command(command: list[str]) -> tuple[bool, str | None]:
     return True, output.splitlines()[0]
 
 
-def doctor_check(label: str, command: list[str] | None, required: bool = True) -> bool:
+def doctor_check(
+    label: str,
+    command: list[str] | None,
+    required: bool = True,
+    probe: bool = True,
+) -> bool:
     if not command:
         state = "missing"
         suffix = "required" if required else "optional"
         print(f"[{state}] {label} ({suffix})")
         return not required
 
-    healthy, version = probe_command(command)
     rendered = shlex.join(command)
+    if not probe:
+        print(f"[ok] {label}: {rendered}")
+        return True
+
+    healthy, version = probe_command(command)
     if not healthy:
         state = "broken"
         suffix = "required" if required else "optional"
@@ -175,7 +184,7 @@ def run_doctor() -> int:
     ok = True
     ok &= doctor_check("Pandoc", pandoc_command(), required=True)
     ok &= doctor_check("Defuddle", defuddle_command(), required=True)
-    doctor_check("WeChat extractor", wechat_tool_command(), required=False)
+    doctor_check("WeChat extractor", wechat_tool_command(), required=False, probe=False)
     print("")
     if ok:
         print("Core dependencies are available.")
