@@ -8,6 +8,7 @@ from url2epub.core import (
     DefuddleError,
     WechatToolError,
     build_epub,
+    build_html_book,
     default_output_name,
     extract_article,
     extract_url,
@@ -113,6 +114,26 @@ class CoreTests(unittest.TestCase):
             ):
                 localized = localize_article_images(article, Path(tmpdir))
         self.assertIn('src="assets/image-001.jpg"', localized.content_html)
+
+    def test_build_html_book_uses_chapter_relative_image_paths(self) -> None:
+        article = Article(
+            title="Image Example",
+            source_url="https://example.com/story",
+            content_html='<p><img src="/image.jpg" alt="hero"/></p>',
+        )
+        with TemporaryDirectory() as tmpdir:
+            with patch(
+                "url2epub.core.fetch_binary",
+                return_value=(b"jpeg-bytes", "image/jpeg"),
+            ):
+                book_path = build_html_book(
+                    Path(tmpdir),
+                    "Image Example",
+                    [article],
+                    "en",
+                )
+                book_html = book_path.read_text(encoding="utf-8")
+        self.assertIn('src="chapter_001/assets/image-001.jpg"', book_html)
 
     def test_replace_unsupported_embeds_uses_iframe_title(self) -> None:
         html = (

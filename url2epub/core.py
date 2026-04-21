@@ -436,7 +436,11 @@ def build_html_book(
         if article.markdown_content is not None:
             sections.append(render_markdown_article_html(article, chapter_dir))
         else:
-            localized = localize_article_images(article, chapter_dir / "assets")
+            localized = localize_article_images(
+                article,
+                chapter_dir / "assets",
+                src_prefix=f"{chapter_dir.name}/assets",
+            )
             sections.append(render_article_section_html(localized))
 
     book_path = workspace / "book.html"
@@ -543,7 +547,12 @@ def render_article_section_html(article: Article) -> str:
     )
 
 
-def localize_article_images(article: Article, assets_dir: Path) -> Article:
+def localize_article_images(
+    article: Article,
+    assets_dir: Path,
+    *,
+    src_prefix: str = "assets",
+) -> Article:
     if not article.content_html:
         return article
 
@@ -553,7 +562,13 @@ def localize_article_images(article: Article, assets_dir: Path) -> Article:
     def replace(match: re.Match[str]) -> str:
         img_tag = match.group(0)
         src = match.group("src")
-        localized = localize_image_source(src, article.source_url, assets_dir, index)
+        localized = localize_image_source(
+            src,
+            article.source_url,
+            assets_dir,
+            index,
+            src_prefix=src_prefix,
+        )
         if not localized:
             return strip_img_web_attrs(img_tag)
         updated = img_tag.replace(src, localized, 1)
@@ -575,6 +590,8 @@ def localize_image_source(
     base_url: str,
     assets_dir: Path,
     index: dict[str, int],
+    *,
+    src_prefix: str = "assets",
 ) -> str | None:
     source = clean_text(src)
     if not source:
@@ -590,7 +607,7 @@ def localize_image_source(
         filename = f"image-{index['value']:03d}{suffix}"
         target = assets_dir / filename
         target.write_bytes(binary)
-        return f"assets/{filename}"
+        return f"{src_prefix}/{filename}"
 
     absolute_url = urljoin(base_url, source)
     try:
@@ -602,7 +619,7 @@ def localize_image_source(
     filename = f"image-{index['value']:03d}{suffix}"
     target = assets_dir / filename
     target.write_bytes(binary)
-    return f"assets/{filename}"
+    return f"{src_prefix}/{filename}"
 
 
 def decode_data_uri(uri: str) -> tuple[bytes, str] | None:
