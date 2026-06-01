@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "url2epub"
 version = "0.1.0"
-description = "Convert one or more web URLs into an EPUB book."
+description = "Convert one or more web URLs into an EPUB book or printable PDF."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

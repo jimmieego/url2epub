@@ -11,6 +11,7 @@ from url2epub.cli import (
     format_duration,
     main,
     render_progress_bar,
+    resolve_output_format,
 )
 from url2epub.core import Article
 
@@ -67,6 +68,9 @@ class CliTests(unittest.TestCase):
                 urls=["https://example.com/article"],
                 output=None,
                 title=None,
+                format="epub",
+                pdf=False,
+                pdf_engine=None,
                 language="en",
                 timeout=20,
                 allow_fallback=False,
@@ -85,6 +89,9 @@ class CliTests(unittest.TestCase):
                 urls=["https://example.com/article"],
                 output=None,
                 title=None,
+                format="epub",
+                pdf=False,
+                pdf_engine=None,
                 language="en",
                 timeout=20,
                 allow_fallback=False,
@@ -135,6 +142,66 @@ class CliTests(unittest.TestCase):
         self.assertIn("1/1 complete [####################] (10.0s)", stderr.getvalue())
         self.assertIn("[Done] Wrote example.epub (2.5s)", stderr.getvalue())
         self.assertEqual(stdout.getvalue(), "example.epub\n")
+
+    def test_main_builds_pdf_when_requested(self) -> None:
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        article = Article(
+            title="Example",
+            source_url="https://example.com/article",
+            content_html="<p>Example</p>",
+        )
+
+        perf_counter_values = iter([10.0, 10.0, 11.25, 20.0, 20.0, 22.5])
+
+        with patch("url2epub.cli.extract_url", return_value=article), patch(
+            "url2epub.cli.build_pdf",
+            return_value="example.pdf",
+        ) as build_pdf, patch(
+            "url2epub.cli.choose_output_path",
+            return_value="example.pdf",
+        ), patch(
+            "url2epub.cli.default_output_name",
+            return_value="example.pdf",
+        ) as default_output_name, patch(
+            "url2epub.cli.sys.stderr",
+            stderr,
+        ), patch(
+            "url2epub.cli.time.perf_counter",
+            side_effect=lambda: next(perf_counter_values),
+        ), patch(
+            "sys.stdout",
+            stdout,
+        ):
+            result = main(
+                [
+                    "--pdf",
+                    "--pdf-engine",
+                    "weasyprint",
+                    "https://example.com/article",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        default_output_name.assert_called_once_with(
+            [article],
+            explicit_title=None,
+            extension=".pdf",
+        )
+        build_pdf.assert_called_once_with(
+            [article],
+            output_path="example.pdf",
+            book_title=None,
+            language="en",
+            pdf_engine="weasyprint",
+        )
+        self.assertIn("[build] Generating PDF with Pandoc", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "example.pdf\n")
+
+    def test_resolve_output_format_prefers_pdf_shortcut(self) -> None:
+        args = Namespace(format="epub", pdf=True)
+
+        self.assertEqual(resolve_output_format(args), "pdf")
 
     def test_doctor_check_reports_broken_required_command(self) -> None:
         output = io.StringIO()

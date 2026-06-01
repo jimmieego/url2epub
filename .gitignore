@@ -1,8 +1,10 @@
 .DS_Store
 .venv/
+.tools/
 __pycache__/
 *.pyc
 *.epub
+*.pdf
 build/
 dist/
 node_modules/

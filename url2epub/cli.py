@@ -10,10 +10,12 @@ import sys
 
 from .core import (
     build_epub,
+    build_pdf,
     default_output_name,
     defuddle_command,
     extract_url,
     pandoc_command,
+    typst_command,
     wechat_tool_command,
 )
 
@@ -131,6 +133,12 @@ def choose_output_path(requested_output: str | None, inferred_output: str) -> st
         index += 1
 
 
+def resolve_output_format(args: argparse.Namespace) -> str:
+    if getattr(args, "pdf", False):
+        return "pdf"
+    return args.format
+
+
 def probe_command(command: list[str]) -> tuple[bool, str | None]:
     try:
         completed = subprocess.run(
@@ -184,10 +192,12 @@ def run_doctor() -> int:
     ok = True
     ok &= doctor_check("Pandoc", pandoc_command(), required=True)
     ok &= doctor_check("Defuddle", defuddle_command(), required=True)
+    doctor_check("Typst PDF engine", typst_command(), required=False)
     doctor_check("WeChat extractor", wechat_tool_command(), required=False, probe=False)
     print("")
     if ok:
         print("Core dependencies are available.")
+        print("Typst is optional, but it is the preferred PDF engine when present.")
         print("WeChat support is optional and only needed for mp.weixin.qq.com URLs.")
         return 0
 
@@ -226,9 +236,11 @@ def run_convert(args: argparse.Namespace) -> int:
             print(f"error: failed to process {url} after {elapsed}: {exc}", file=sys.stderr)
             return 1
 
+    output_format = resolve_output_format(args)
+    extension = ".pdf" if output_format == "pdf" else ".epub"
     output = choose_output_path(
         args.output,
-        default_output_name(articles, explicit_title=args.title),
+        default_output_name(articles, explicit_title=args.title, extension=extension),
     )
     book_title = args.title or (articles[0].title if len(articles) == 1 else None)
     if book_title:
@@ -236,15 +248,24 @@ def run_convert(args: argparse.Namespace) -> int:
     else:
         reporter.info("Book title: using Pandoc/default multi-article title behavior")
     reporter.info(f"Output: {output}")
-    reporter.start("[build] Generating EPUB with Pandoc")
+    reporter.start(f"[build] Generating {output_format.upper()} with Pandoc")
     build_started_at = time.perf_counter()
 
-    path = build_epub(
-        articles,
-        output_path=output,
-        book_title=args.title,
-        language=args.language,
-    )
+    if output_format == "pdf":
+        path = build_pdf(
+            articles,
+            output_path=output,
+            book_title=args.title,
+            language=args.language,
+            pdf_engine=args.pdf_engine,
+        )
+    else:
+        path = build_epub(
+            articles,
+            output_path=output,
+            book_title=args.title,
+            language=args.language,
+        )
     build_elapsed = format_duration(time.perf_counter() - build_started_at)
     reporter.stop(f"[Done] Wrote {path} ({build_elapsed})")
     print(path)
@@ -253,12 +274,27 @@ def run_convert(args: argparse.Namespace) -> int:
 
 def add_convert_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("urls", nargs="*", help="One or more HTTP(S) URLs.")
-    parser.add_argument("-o", "--output", help="Output EPUB filename.")
-    parser.add_argument("--title", help="Override the EPUB book title.")
+    parser.add_argument("-o", "--output", help="Output filename.")
+    parser.add_argument("--title", help="Override the book title.")
+    parser.add_argument(
+        "--format",
+        choices=("epub", "pdf"),
+        default="epub",
+        help="Output format. Default: epub",
+    )
+    parser.add_argument(
+        "--pdf",
+        action="store_true",
+        help="Shortcut for --format pdf.",
+    )
+    parser.add_argument(
+        "--pdf-engine",
+        help="Pandoc PDF engine. Default for PDF: typst.",
+    )
     parser.add_argument(
         "--language",
         default="en",
-        help="Language code stored in the EPUB metadata. Default: en",
+        help="Language code stored in document metadata. Default: en",
     )
     parser.add_argument(
         "--timeout",
@@ -276,7 +312,7 @@ def add_convert_arguments(parser: argparse.ArgumentParser) -> None:
 def build_root_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="url2epub",
-        description="Fetch one or more URLs and package them into an EPUB.",
+        description="Fetch one or more URLs and package them into an EPUB or PDF.",
     )
     parser.add_argument(
         "command",
@@ -290,7 +326,7 @@ def build_root_parser() -> argparse.ArgumentParser:
 def build_convert_parser(prog: str = "url2epub") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
-        description="Fetch one or more URLs and package them into an EPUB.",
+        description="Fetch one or more URLs and package them into an EPUB or PDF.",
     )
     add_convert_arguments(parser)
     return parser

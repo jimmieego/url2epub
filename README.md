@@ -1,16 +1,17 @@
 # url2epub
 
-`url2epub` is a small Python CLI that fetches one or more web pages, extracts readable article content, and packages the result as an EPUB.
+`url2epub` is a small Python CLI that fetches one or more web pages, extracts readable article content, and packages the result as an EPUB or printable PDF.
 
 ## Requirements
 
 `url2epub` depends on a few external tools:
 
-- `pandoc` to generate the final EPUB file
+- `pandoc` to generate the final EPUB or PDF file
+- `typst` for the preferred PDF rendering path
 - `defuddle` for the default article extraction path
 - `wechat-article-to-markdown` for WeChat articles on `mp.weixin.qq.com` when you want that support
 
-Pandoc must be installed and available on your `PATH`, because `url2epub` shells out to it during EPUB generation.
+Pandoc must be installed and available on your `PATH`, because `url2epub` shells out to it during EPUB and PDF generation. Typst is preferred for PDF output and is used by default when generating PDFs.
 
 Common Pandoc installation options:
 
@@ -42,6 +43,16 @@ export PATH="/path/to/pandoc/bin:$PATH"
 ```powershell
 # Windows PowerShell
 $env:Path = "C:\path\to\pandoc;" + $env:Path
+```
+
+Common Typst installation options:
+
+```bash
+# macOS (Homebrew)
+brew install typst
+
+# Or download a release binary from GitHub
+typst --version
 ```
 
 ## Install
@@ -89,7 +100,27 @@ url2epub convert "https://example.com/article"
 
 The CLI shows progress in the terminal and prints the detected article title as it processes each URL. If you do not pass `--title`, the default output filename is inferred from the extracted title.
 
-If the inferred EPUB filename already exists, `url2epub` now automatically picks a numbered filename like `article-title-2.epub` to avoid accidental reuse during repeated imports into reader apps such as Apple Books.
+If the inferred output filename already exists, `url2epub` now automatically picks a numbered filename like `article-title-2.epub` to avoid accidental reuse during repeated imports into reader apps such as Apple Books.
+
+Generate a printable PDF instead of an EPUB:
+
+```bash
+url2epub --pdf "https://news.ycombinator.com/item?id=123"
+```
+
+PDF generation uses Typst by default for cleaner book-like typography: Charter for body text, Inter for headings, JetBrains Mono for code, and Noto fallbacks for CJK and emoji text.
+
+The longer form is also available:
+
+```bash
+url2epub --format pdf "https://www.reddit.com/r/example/comments/abc/story/"
+```
+
+You can still choose a different Pandoc PDF engine explicitly:
+
+```bash
+url2epub --pdf --pdf-engine weasyprint "https://example.com/article"
+```
 
 Allow the built-in extractor only when Defuddle fails:
 
@@ -116,6 +147,7 @@ url2epub doctor
 The `doctor` command checks:
 - `pandoc`
 - `defuddle`
+- `typst` if present
 - `wechat-article-to-markdown` if present
 
 It exits non-zero when the required core tools are missing.
@@ -145,6 +177,6 @@ GitHub Actions runs the same basic checks on pushes and pull requests:
 
 - Defuddle is the default extraction engine and is required unless you pass `--allow-fallback`.
 - WeChat article URLs are detected automatically and use `wechat-article-to-markdown` when installed.
-- EPUB generation is handled by Pandoc.
-- Images are downloaded locally and rewritten before the EPUB is built so Pandoc can embed them.
+- EPUB and PDF generation are handled by Pandoc.
+- Images are downloaded locally and rewritten before the EPUB or PDF is built so Pandoc can embed them.
 - The fallback extractor is intentionally conservative and aimed at article-style pages.

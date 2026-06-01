@@ -9,15 +9,23 @@ from url2epub.core import (
     WechatToolError,
     build_epub,
     build_html_book,
+    build_pdf,
+    count_hacker_news_comments,
     default_output_name,
     extract_article,
+    extract_hacker_news_item_from_url,
     extract_url,
+    hacker_news_item_id,
+    is_hacker_news_item_url,
     is_wechat_url,
     localize_article_images,
     replace_unsupported_embeds,
+    render_hacker_news_article,
+    render_hacker_news_comments,
     slugify,
     Article,
     render_article_markdown,
+    TYPST_STYLE,
 )
 
 
@@ -42,6 +50,15 @@ class CoreTests(unittest.TestCase):
             )
         self.assertEqual(default_output_name([article]), "example-story.epub")
 
+    def test_default_output_name_accepts_pdf_extension(self) -> None:
+        article = Article(
+            title="Printable Story",
+            source_url="https://example.com/story",
+            content_html="<p>Example content.</p>",
+        )
+
+        self.assertEqual(default_output_name([article], extension=".pdf"), "printable-story.pdf")
+
     def test_extract_article_requires_defuddle_by_default(self) -> None:
         with patch("url2epub.core.run_defuddle", side_effect=DefuddleError("missing")):
             with self.assertRaises(DefuddleError):
@@ -50,6 +67,14 @@ class CoreTests(unittest.TestCase):
     def test_is_wechat_url_detects_mp_domain(self) -> None:
         self.assertTrue(is_wechat_url("https://mp.weixin.qq.com/s/example"))
         self.assertFalse(is_wechat_url("https://example.com/story"))
+
+    def test_is_hacker_news_item_url_detects_item_pages(self) -> None:
+        self.assertTrue(is_hacker_news_item_url("https://news.ycombinator.com/item?id=123"))
+        self.assertFalse(is_hacker_news_item_url("https://news.ycombinator.com/news"))
+
+    def test_hacker_news_item_id_reads_query_id(self) -> None:
+        self.assertEqual(hacker_news_item_id("https://news.ycombinator.com/item?id=123"), 123)
+        self.assertIsNone(hacker_news_item_id("https://news.ycombinator.com/item"))
 
     def test_extract_article_uses_fallback_content(self) -> None:
         with patch("url2epub.core.run_defuddle", side_effect=DefuddleError("missing")):
@@ -217,6 +242,87 @@ class CoreTests(unittest.TestCase):
         self.assertIsNotNone(article.asset_dir)
         self.assertTrue((article.asset_dir / "img_001.png").exists())
 
+    def test_render_hacker_news_article_preserves_algolia_comment_tree(self) -> None:
+        article = render_hacker_news_article(
+            {
+                "title": "Example HN Story",
+                "url": "https://example.com/story",
+                "author": "alice",
+                "points": 42,
+                "created_at": "2026-05-31T12:41:19.000Z",
+                "children": [
+                    {
+                        "author": "bob",
+                        "created_at": "2026-05-31T13:00:00.000Z",
+                        "text": 'First comment with a <a href="https://example.com/link">link</a>.',
+                        "children": [
+                            {
+                                "author": "carol",
+                                "created_at": "2026-05-31T14:00:00.000Z",
+                                "text": "Nested reply.",
+                                "children": [],
+                            }
+                        ],
+                    }
+                ],
+            },
+            "https://news.ycombinator.com/item?id=123",
+        )
+
+        self.assertEqual(article.title, "Example HN Story")
+        self.assertIn("Story link", article.content_html or "")
+        self.assertIn("<h2>Comments</h2>", article.content_html or "")
+        self.assertIn("First comment", article.content_html or "")
+        self.assertIn("Nested reply", article.content_html or "")
+        self.assertIn('class="hn-comment hn-depth-0"', article.content_html or "")
+        self.assertIn('class="hn-comment hn-depth-1"', article.content_html or "")
+        self.assertIn('id="hn-comment-unknown"', article.content_html or "")
+        self.assertNotIn("<table", article.content_html or "")
+        self.assertNotIn("<td", article.content_html or "")
+
+    def test_render_hacker_news_comments_uses_comment_ids_for_links(self) -> None:
+        comments = [
+            {
+                "id": 456,
+                "author": "bob",
+                "text": "Comment body.",
+                "children": [],
+            }
+        ]
+
+        html = "".join(render_hacker_news_comments(comments))
+
+        self.assertIn('id="hn-comment-456"', html)
+
+    def test_count_hacker_news_comments_includes_nested_comments(self) -> None:
+        comments = [
+            {
+                "text": "Top",
+                "children": [
+                    {"text": "Nested", "children": []},
+                    {"deleted": True, "text": "Deleted", "children": []},
+                ],
+            }
+        ]
+
+        self.assertEqual(count_hacker_news_comments(comments), 2)
+
+    def test_extract_hacker_news_item_from_url_uses_algolia_api(self) -> None:
+        with patch(
+            "url2epub.core.fetch_hacker_news_item",
+            return_value={
+                "title": "API Story",
+                "url": "https://example.com/story",
+                "children": [],
+            },
+        ) as fetch_hacker_news_item:
+            article = extract_hacker_news_item_from_url(
+                "https://news.ycombinator.com/item?id=123",
+            )
+
+        self.assertEqual(article.title, "API Story")
+        fetch_hacker_news_item.assert_called_once_with(123, timeout=20)
+
     def test_build_epub_sets_fixed_author_metadata(self) -> None:
         article = Article(
             title="Example Story",
@@ -256,6 +362,63 @@ class CoreTests(unittest.TestCase):
         self.assertIn("[Source](https://example.com/story)", rendered)
         self.assertIn("Body paragraph.", rendered)
         self.assertNotIn("> 公众号:", rendered)
+
+    def test_build_pdf_uses_pdf_target_and_engine(self) -> None:
+        article = Article(
+            title="Printable Story",
+            source_url="https://example.com/story",
+            content_html="<p>Example content.</p>",
+        )
+
+        with TemporaryDirectory() as tmpdir, patch(
+            "url2epub.core.pandoc_command",
+            return_value=["pandoc"],
+        ), patch("url2epub.core.subprocess.run") as run_mock:
+            output = build_pdf(
+                [article],
+                Path(tmpdir) / "book.pdf",
+                pdf_engine="weasyprint",
+            )
+
+        self.assertEqual(output, Path(tmpdir) / "book.pdf")
+        command = run_mock.call_args.args[0]
+        self.assertIn("--to=pdf", command)
+        self.assertIn("--pdf-engine", command)
+        self.assertIn("weasyprint", command)
+        self.assertIn("author=URL2EPUB", command)
+        self.assertNotIn("--include-before-body", command)
+
+    def test_build_pdf_defaults_to_typst_with_type_style(self) -> None:
+        article = Article(
+            title="Printable Story",
+            source_url="https://example.com/story",
+            content_html="<p>Example content.</p>",
+        )
+        captured_style = {"content": ""}
+
+        def capture_run(command: list[str], **_: object) -> None:
+            style_path = Path(command[command.index("--include-before-body") + 1])
+            captured_style["content"] = style_path.read_text(encoding="utf-8")
+
+        with TemporaryDirectory() as tmpdir, patch(
+            "url2epub.core.pandoc_command",
+            return_value=["pandoc"],
+        ), patch(
+            "url2epub.core.typst_command",
+            return_value=["/tools/typst"],
+        ), patch("url2epub.core.subprocess.run", side_effect=capture_run) as run_mock:
+            output = build_pdf([article], Path(tmpdir) / "book.pdf")
+
+        self.assertEqual(output, Path(tmpdir) / "book.pdf")
+        command = run_mock.call_args.args[0]
+        self.assertIn("--to=typst", command)
+        self.assertIn("--pdf-engine", command)
+        self.assertIn("/tools/typst", command)
+        self.assertIn("--include-before-body", command)
+        self.assertIn('"Charter"', captured_style["content"])
+        self.assertIn('"Inter"', captured_style["content"])
+        self.assertIn('"JetBrains Mono"', captured_style["content"])
+        self.assertEqual(captured_style["content"], TYPST_STYLE)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from functools import lru_cache
 from html import escape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -10,10 +12,11 @@ import mimetypes
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import tempfile
 from typing import Iterable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 USER_AGENT = (
@@ -23,6 +26,7 @@ USER_AGENT = (
 )
 
 EPUB_AUTHOR = "URL2EPUB"
+HN_API_BASE = "https://hacker-news.firebaseio.com/v0"
 
 BLOCKED_TAGS = {
     "script",
@@ -150,18 +154,41 @@ def fetch_html(url: str, timeout: int = 20) -> str:
             "Accept": "text/html,application/xhtml+xml",
         },
     )
-    with urlopen(request, timeout=timeout) as response:
+    with urlopen(request, timeout=timeout, context=https_context()) as response:
         charset = response.headers.get_content_charset() or "utf-8"
         return response.read().decode(charset, errors="replace")
 
 
 def fetch_binary(url: str, timeout: int = 20) -> tuple[bytes, str | None]:
     request = Request(url, headers={"User-Agent": USER_AGENT})
-    with urlopen(request, timeout=timeout) as response:
+    with urlopen(request, timeout=timeout, context=https_context()) as response:
         return response.read(), response.headers.get_content_type()
 
 
+def fetch_json(url: str, timeout: int = 20) -> object:
+    request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    with urlopen(request, timeout=timeout, context=https_context()) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return json.loads(response.read().decode(charset, errors="replace"))
+
+
+@lru_cache(maxsize=1)
+def https_context() -> ssl.SSLContext | None:
+    try:
+        import certifi
+    except ImportError:
+        return None
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 def extract_url(url: str, *, timeout: int = 20, allow_fallback: bool = False) -> Article:
+    if is_hacker_news_item_url(url):
+        try:
+            return extract_hacker_news_item_from_url(url, timeout=timeout)
+        except Exception:
+            if not allow_fallback:
+                raise
+
     if is_wechat_url(url):
         try:
             return extract_wechat_article_from_url(url)
@@ -339,9 +366,196 @@ def pandoc_command() -> list[str] | None:
     return None
 
 
+def typst_command() -> list[str] | None:
+    if shutil.which("typst"):
+        return ["typst"]
+    local_candidate = (
+        Path(__file__).resolve().parents[1]
+        / ".tools"
+        / "typst"
+        / "typst-x86_64-apple-darwin"
+        / "typst"
+    )
+    if local_candidate.exists():
+        return [str(local_candidate)]
+    return None
+
+
 def is_wechat_url(url: str) -> bool:
     host = urlparse(url).netloc.lower()
     return host == "mp.weixin.qq.com" or host.endswith(".mp.weixin.qq.com")
+
+
+def is_hacker_news_item_url(url: str) -> bool:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    return host in {"news.ycombinator.com", "www.news.ycombinator.com"} and parsed.path == "/item"
+
+
+def hacker_news_item_id(url: str) -> int | None:
+    parsed = urlparse(url)
+    item_id = parse_qs(parsed.query).get("id", [""])[0]
+    if item_id.isdigit():
+        return int(item_id)
+    return None
+
+
+def extract_hacker_news_item_from_url(url: str, *, timeout: int = 20) -> Article:
+    item_id = hacker_news_item_id(url)
+    if item_id is None:
+        raise ValueError(f"Unable to determine Hacker News item id from URL: {url}")
+    data = fetch_hacker_news_item(item_id, timeout=timeout)
+    return render_hacker_news_article(data, url)
+
+
+def fetch_hacker_news_item(item_id: int, *, timeout: int = 20) -> dict[str, object]:
+    url = f"https://hn.algolia.com/api/v1/items/{item_id}"
+    data = fetch_json(url, timeout=timeout)
+    if not isinstance(data, dict):
+        raise ValueError("Hacker News API returned an unexpected payload.")
+    return data
+
+
+def render_hacker_news_article(item: dict[str, object], source_url: str) -> Article:
+    title = clean_text(string_value(item.get("title"))) or hostname_label(source_url)
+    story_url = clean_text(string_value(item.get("url")))
+    author = clean_text(string_value(item.get("author"))) or None
+    metadata = format_hacker_news_metadata(item)
+
+    sections: list[str] = []
+    if story_url:
+        sections.append(f'<p><a href="{escape(story_url, quote=True)}">Story link</a></p>')
+    sections.append(f'<p><a href="{escape(source_url, quote=True)}">Hacker News discussion</a></p>')
+    if metadata:
+        sections.append(f"<p><em>{escape(metadata)}</em></p>")
+
+    story_text = string_value(item.get("text")).strip()
+    if story_text:
+        sections.append(story_text)
+
+    comments = list_value(item.get("children"))
+    if comments:
+        sections.append("<h2>Comments</h2>")
+        sections.extend(render_hacker_news_comments(comments, source_url=source_url))
+
+    return Article(
+        title=title,
+        source_url=source_url,
+        author=author,
+        content_html="\n".join(sections),
+    )
+
+
+def render_hacker_news_comments(
+    comments: list[object],
+    *,
+    source_url: str = "",
+    depth: int = 0,
+) -> list[str]:
+    rendered: list[str] = []
+    for comment in comments:
+        if not isinstance(comment, dict) or comment.get("deleted") or comment.get("dead"):
+            continue
+        text = string_value(comment.get("text")).strip()
+        children = list_value(comment.get("children"))
+        comment_id = html_id("hn-comment", comment.get("id"))
+        child_html = "".join(
+            render_hacker_news_comments(children, source_url=source_url, depth=depth + 1)
+        )
+        if text:
+            meta = render_hacker_news_comment_metadata(comment, depth, source_url)
+            rendered.append(
+                f'<blockquote id="{comment_id}" class="hn-comment hn-depth-{min(depth, 6)}">'
+                f'<p class="hn-comment-meta"><strong>{meta}</strong></p>'
+                f'<div class="hn-comment-text">{text}</div>'
+                f"{child_html}"
+                "</blockquote>"
+            )
+        elif child_html:
+            rendered.append(child_html)
+    return rendered
+
+
+def format_hacker_news_metadata(item: dict[str, object]) -> str:
+    parts: list[str] = []
+    points = item.get("points")
+    if isinstance(points, int):
+        parts.append(f"{points} points")
+    author = clean_text(string_value(item.get("author")))
+    if author:
+        parts.append(f"by {author}")
+    created = format_hacker_news_time(item)
+    if created:
+        parts.append(created)
+    comment_count = count_hacker_news_comments(list_value(item.get("children")))
+    if comment_count:
+        parts.append(f"{comment_count} comments")
+    return " | ".join(parts)
+
+
+def count_hacker_news_comments(comments: list[object]) -> int:
+    count = 0
+    for comment in comments:
+        if not isinstance(comment, dict) or comment.get("deleted") or comment.get("dead"):
+            continue
+        if string_value(comment.get("text")).strip():
+            count += 1
+        count += count_hacker_news_comments(list_value(comment.get("children")))
+    return count
+
+
+def format_hacker_news_comment_metadata(comment: dict[str, object], depth: int) -> str:
+    parts: list[str] = []
+    author = clean_text(string_value(comment.get("author")))
+    if author:
+        parts.append(author)
+    created = format_hacker_news_time(comment)
+    if created:
+        parts.append(created)
+    if depth:
+        parts.append("reply" if depth == 1 else f"reply level {depth}")
+    return " | ".join(parts) or "comment"
+
+
+def render_hacker_news_comment_metadata(
+    comment: dict[str, object],
+    depth: int,
+    source_url: str,
+) -> str:
+    metadata = format_hacker_news_comment_metadata(comment, depth)
+    item_id = comment.get("id")
+    if isinstance(item_id, int):
+        link = hacker_news_comment_url(source_url, item_id)
+        return f'<a href="{escape(link, quote=True)}">{escape(metadata)}</a>'
+    return escape(metadata)
+
+
+def hacker_news_comment_url(source_url: str, item_id: int) -> str:
+    if source_url:
+        return urljoin(source_url, f"item?id={item_id}")
+    return f"https://news.ycombinator.com/item?id={item_id}"
+
+
+def format_hacker_news_time(item: dict[str, object]) -> str:
+    created_at = clean_text(string_value(item.get("created_at")))
+    if created_at:
+        return created_at.removesuffix(".000Z").replace("T", " ") + " UTC"
+    timestamp = item.get("created_at_i")
+    if isinstance(timestamp, int):
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return ""
+
+
+def list_value(value: object) -> list[object]:
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def html_id(prefix: str, value: object) -> str:
+    rendered = str(value) if value is not None else "unknown"
+    rendered = re.sub(r"[^a-zA-Z0-9_-]+", "-", rendered).strip("-")
+    return f"{prefix}-{rendered or 'unknown'}"
 
 
 def fallback_extract_content(html: str) -> str:
@@ -366,9 +580,58 @@ def build_epub(
     book_title: str | None = None,
     language: str = "en",
 ) -> Path:
+    return build_with_pandoc(
+        articles,
+        output_path=output_path,
+        output_format="epub",
+        book_title=book_title,
+        language=language,
+    )
+
+
+def build_pdf(
+    articles: Iterable[Article],
+    output_path: str | Path,
+    book_title: str | None = None,
+    language: str = "en",
+    pdf_engine: str | None = None,
+) -> Path:
+    return build_with_pandoc(
+        articles,
+        output_path=output_path,
+        output_format="pdf",
+        book_title=book_title,
+        language=language,
+        pdf_engine=pdf_engine,
+    )
+
+
+def resolve_pdf_engine(pdf_engine: str | None) -> str:
+    if pdf_engine and pdf_engine != "typst":
+        return pdf_engine
+    command = typst_command()
+    if command:
+        return command[0]
+    return "typst"
+
+
+def is_typst_engine(pdf_engine: str) -> bool:
+    return Path(pdf_engine).name == "typst"
+
+
+def build_with_pandoc(
+    articles: Iterable[Article],
+    output_path: str | Path,
+    output_format: str,
+    book_title: str | None = None,
+    language: str = "en",
+    pdf_engine: str | None = None,
+) -> Path:
     article_list = list(articles)
     if not article_list:
-        raise ValueError("At least one article is required to build an EPUB.")
+        raise ValueError(f"At least one article is required to build a {output_format.upper()}.")
+    if output_format not in {"epub", "pdf"}:
+        raise ValueError(f"Unsupported output format: {output_format}")
 
     pandoc = pandoc_command()
     if not pandoc:
@@ -380,18 +643,21 @@ def build_epub(
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        css_path = tmp / "epub.css"
-        css_path.write_text(DEFAULT_CSS, encoding="utf-8")
+        css_path = tmp / f"{output_format}.css"
+        css_path.write_text(css_for_format(output_format), encoding="utf-8")
+        typst_style_path = tmp / "url2epub.typ"
+        resolved_pdf_engine = resolve_pdf_engine(pdf_engine)
+        use_typst = output_format == "pdf" and is_typst_engine(resolved_pdf_engine)
+        if use_typst:
+            typst_style_path.write_text(TYPST_STYLE, encoding="utf-8")
         html_book = build_html_book(tmp, title, article_list, language)
         command = [
             *pandoc,
             str(html_book),
             "--from=html",
-            "--to=epub",
+            "--to=typst" if use_typst else f"--to={output_format}",
             "--standalone",
             "--toc",
-            "--css",
-            str(css_path),
             "--metadata",
             f"title={title}",
             "--metadata",
@@ -403,6 +669,12 @@ def build_epub(
             "--output",
             str(output),
         ]
+        if use_typst:
+            command.extend(["--include-before-body", str(typst_style_path)])
+        else:
+            command.extend(["--css", str(css_path)])
+        if output_format == "pdf":
+            command.extend(["--pdf-engine", resolved_pdf_engine])
         try:
             subprocess.run(
                 command,
@@ -417,7 +689,9 @@ def build_epub(
             stderr = clean_text(exc.stderr)
             raise PandocError(f"Pandoc failed: {stderr or exc}") from exc
         except subprocess.TimeoutExpired as exc:
-            raise PandocError("Pandoc timed out while generating the EPUB.") from exc
+            raise PandocError(
+                f"Pandoc timed out while generating the {output_format.upper()}."
+            ) from exc
 
     return output
 
@@ -641,7 +915,11 @@ def decode_data_uri(uri: str) -> tuple[bytes, str] | None:
     return payload.encode("utf-8"), media_type
 
 
-def default_output_name(articles: Iterable[Article], explicit_title: str | None = None) -> str:
+def default_output_name(
+    articles: Iterable[Article],
+    explicit_title: str | None = None,
+    extension: str = ".epub",
+) -> str:
     article_list = list(articles)
     if explicit_title:
         base = explicit_title
@@ -649,7 +927,8 @@ def default_output_name(articles: Iterable[Article], explicit_title: str | None 
         base = article_list[0].title
     else:
         base = "book"
-    return slugify(base) + ".epub"
+    suffix = extension if extension.startswith(".") else f".{extension}"
+    return slugify(base) + suffix
 
 
 def extract_title(html: str) -> str | None:
@@ -865,7 +1144,72 @@ h1, h2, h3 { line-height: 1.2; }
 pre { white-space: pre-wrap; }
 img { max-width: 100%; height: auto; }
 a { text-decoration: underline; color: inherit; }
+blockquote { margin-left: 1.25em; padding-left: 0.75em; border-left: 2px solid #ddd; }
+.hn-comment { margin: 0.8em 0 0.8em 0.9em; padding-left: 0.75em; border-left: 2px solid #d0d0d0; }
+.hn-comment .hn-comment { margin-left: 0.9em; }
+.hn-comment-meta { margin-bottom: 0.25em; }
 """
+
+
+PDF_CSS = """
+@page { margin: 0.75in; }
+body { font-family: serif; font-size: 11pt; line-height: 1.45; }
+section { break-after: page; }
+section:last-child { break-after: auto; }
+h1, h2, h3 { line-height: 1.2; break-after: avoid; }
+p, blockquote, li { orphans: 3; widows: 3; }
+blockquote { margin-left: 1.25em; padding-left: 0.75em; border-left: 2px solid #ddd; }
+.hn-comment { margin: 0.8em 0 0.8em 0.9em; padding-left: 0.75em; border-left: 2px solid #d0d0d0; }
+.hn-comment .hn-comment { margin-left: 0.9em; }
+.hn-comment-meta { margin-bottom: 0.25em; }
+pre { white-space: pre-wrap; border: 1px solid #ddd; padding: 0.5rem; }
+img { max-width: 100%; height: auto; }
+a { color: inherit; text-decoration: underline; overflow-wrap: anywhere; }
+"""
+
+
+TYPST_STYLE = """
+#set page(margin: 1in)
+
+#set text(
+  font: (
+    "Charter",
+    "Source Serif 4",
+    "Noto Serif CJK SC",
+    "Noto Color Emoji",
+  ),
+  size: 11pt,
+)
+
+#set par(
+  justify: false,
+  leading: 0.75em,
+)
+
+#show heading: set text(
+  font: "Inter",
+  weight: "bold",
+)
+
+#show raw: set text(
+  font: "JetBrains Mono",
+  size: 0.9em,
+)
+
+#show quote.where(block: true): it => block(
+  inset: (left: 0.18in, top: 0.15em, bottom: 0.15em),
+  outset: (left: 0.08in),
+  stroke: (left: rgb("#d0d0d0") + 0.8pt),
+  width: 100%,
+  below: 0.55em,
+)[#it.body]
+"""
+
+
+def css_for_format(output_format: str) -> str:
+    if output_format == "pdf":
+        return PDF_CSS
+    return DEFAULT_CSS
 
 
 IMG_TAG_RE = re.compile(
