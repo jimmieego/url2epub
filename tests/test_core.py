@@ -22,6 +22,7 @@ from url2epub.core import (
     replace_unsupported_embeds,
     render_hacker_news_article,
     render_hacker_news_comments,
+    render_article_section_html,
     slugify,
     Article,
     render_article_markdown,
@@ -140,6 +141,27 @@ class CoreTests(unittest.TestCase):
                 localized = localize_article_images(article, Path(tmpdir))
         self.assertIn('src="assets/image-001.jpg"', localized.content_html)
 
+    def test_localize_article_images_detects_mislabeled_webp_bytes(self) -> None:
+        article = Article(
+            title="Image Example",
+            source_url="https://example.com/story",
+            content_html='<p><img src="/image.jpeg" alt="hero"/></p>',
+        )
+        webp = b"RIFF\x24\x00\x00\x00WEBPVP8 "
+
+        with TemporaryDirectory() as tmpdir:
+            assets_dir = Path(tmpdir)
+            with patch(
+                "url2epub.core.fetch_binary",
+                return_value=(webp, "image/jpeg"),
+            ):
+                localized = localize_article_images(article, assets_dir)
+
+            saved_image = assets_dir / "image-001.webp"
+            self.assertEqual(saved_image.read_bytes(), webp)
+
+        self.assertIn('src="assets/image-001.webp"', localized.content_html)
+
     def test_build_html_book_uses_chapter_relative_image_paths(self) -> None:
         article = Article(
             title="Image Example",
@@ -173,6 +195,23 @@ class CoreTests(unittest.TestCase):
         html = '<iframe src="https://example.com/embed/123"></iframe>'
         replaced = replace_unsupported_embeds(html)
         self.assertIn("Interactive content omitted from EPUB (example.com).", replaced)
+
+    def test_render_article_section_removes_broken_footnote_backlinks(self) -> None:
+        article = Article(
+            title="Footnote Example",
+            source_url="https://example.com/story",
+            content_html=(
+                '<p>Text<sup id="fnref:1"><a href="#fn:1">1</a></sup></p>'
+                '<ol><li id="fn:1">Note '
+                '<a class="footnote-backref" href="#fnref:1">return</a></li></ol>'
+            ),
+        )
+
+        rendered = render_article_section_html(article)
+
+        self.assertIn('href="#fn:1"', rendered)
+        self.assertNotIn("footnote-backref", rendered)
+        self.assertNotIn('href="#fnref:1"', rendered)
 
     def test_extract_url_routes_wechat_urls_to_wechat_tool(self) -> None:
         with patch(

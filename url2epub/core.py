@@ -810,7 +810,8 @@ def render_article_markdown(article: Article) -> str:
 
 def render_article_section_html(article: Article) -> str:
     byline = f"<p><em>By {escape(article.author)}</em></p>" if article.author else ""
-    content = replace_unsupported_embeds(article.content_html or "")
+    content = remove_footnote_backlinks(article.content_html or "")
+    content = replace_unsupported_embeds(content)
     return (
         "<section>"
         f"<h1>{escape(article.title)}</h1>"
@@ -877,7 +878,7 @@ def localize_image_source(
         if not payload:
             return None
         binary, media_type = payload
-        suffix = suffix_for_media_type(media_type) or ".bin"
+        suffix = suffix_for_image_data(binary) or suffix_for_media_type(media_type) or ".bin"
         filename = f"image-{index['value']:03d}{suffix}"
         target = assets_dir / filename
         target.write_bytes(binary)
@@ -889,7 +890,12 @@ def localize_image_source(
     except Exception:
         return None
 
-    suffix = suffix_for_url(absolute_url) or suffix_for_media_type(media_type) or ".bin"
+    suffix = (
+        suffix_for_image_data(binary)
+        or suffix_for_url(absolute_url)
+        or suffix_for_media_type(media_type)
+        or ".bin"
+    )
     filename = f"image-{index['value']:03d}{suffix}"
     target = assets_dir / filename
     target.write_bytes(binary)
@@ -1032,6 +1038,10 @@ def replace_unsupported_embeds(html: str) -> str:
     return IFRAME_RE.sub(replace_iframe_with_note, html)
 
 
+def remove_footnote_backlinks(html: str) -> str:
+    return FOOTNOTE_BACKREF_RE.sub("", html)
+
+
 def replace_iframe_with_note(match: re.Match[str]) -> str:
     attrs = match.group("attrs") or ""
     note = iframe_note_from_attrs(attrs)
@@ -1071,6 +1081,18 @@ def suffix_for_media_type(media_type: str | None) -> str | None:
     if not media_type:
         return None
     return mimetypes.guess_extension(media_type.split(";", 1)[0].strip().lower())
+
+
+def suffix_for_image_data(data: bytes) -> str | None:
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return ".webp"
+    return None
 
 
 def suffix_for_url(url: str) -> str | None:
@@ -1220,6 +1242,14 @@ IMG_TAG_RE = re.compile(
 IFRAME_RE = re.compile(
     r"<iframe\b(?P<attrs>[^>]*)>(?:.*?)</iframe>",
     flags=re.IGNORECASE | re.DOTALL,
+)
+
+FOOTNOTE_BACKREF_RE = re.compile(
+    r"""<a\b
+        (?=[^>]*\bclass\s*=\s*["'][^"']*\bfootnote-backref\b[^"']*["'])
+        [^>]*>.*?</a\s*>
+    """,
+    flags=re.IGNORECASE | re.DOTALL | re.VERBOSE,
 )
 
 
