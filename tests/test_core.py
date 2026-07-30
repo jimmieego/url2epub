@@ -1,3 +1,4 @@
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -19,6 +20,7 @@ from url2epub.core import (
     is_hacker_news_item_url,
     is_wechat_url,
     localize_article_images,
+    normalize_source,
     replace_unsupported_embeds,
     render_hacker_news_article,
     render_hacker_news_comments,
@@ -31,6 +33,63 @@ from url2epub.core import (
 
 
 class CoreTests(unittest.TestCase):
+    def test_normalize_source_preserves_urls(self) -> None:
+        urls = (
+            "https://example.com/story",
+            "file:///tmp/local-story.html",
+        )
+
+        for url in urls:
+            with self.subTest(url=url):
+                self.assertEqual(normalize_source(url), url)
+
+    def test_normalize_source_converts_relative_file_path_to_uri(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            html_path = Path(tmpdir) / "local article.html"
+            html_path.write_text("<html></html>", encoding="utf-8")
+            relative_path = os.path.relpath(html_path, Path.cwd())
+
+            self.assertEqual(normalize_source(relative_path), html_path.resolve().as_uri())
+
+    def test_normalize_source_expands_home_directory(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            html_path = Path(tmpdir) / "article.html"
+            html_path.write_text("<html></html>", encoding="utf-8")
+
+            with patch.dict(os.environ, {"HOME": tmpdir}):
+                self.assertEqual(
+                    normalize_source("~/article.html"),
+                    html_path.resolve().as_uri(),
+                )
+
+    def test_normalize_source_rejects_missing_file(self) -> None:
+        with self.assertRaisesRegex(FileNotFoundError, "Local HTML file not found"):
+            normalize_source("missing-article.html")
+
+    def test_normalize_source_rejects_directory(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            with self.assertRaisesRegex(IsADirectoryError, "Local input is not a file"):
+                normalize_source(tmpdir)
+
+    def test_extract_url_reads_plain_local_file_path(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            html_path = Path(tmpdir) / "local.html"
+            html_path.write_text(
+                """
+                <html>
+                  <head><title>Local Article</title></head>
+                  <body><article><p>This local article has enough content to extract.</p></article></body>
+                </html>
+                """,
+                encoding="utf-8",
+            )
+
+            with patch("url2epub.core.run_defuddle", side_effect=DefuddleError("missing")):
+                article = extract_url(str(html_path), allow_fallback=True)
+
+        self.assertEqual(article.title, "Local Article")
+        self.assertEqual(article.source_url, html_path.resolve().as_uri())
+
     def test_slugify_normalizes_title(self) -> None:
         self.assertEqual(
             slugify("Open Source URL to EPUB!"),

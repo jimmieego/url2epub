@@ -172,6 +172,21 @@ def fetch_json(url: str, timeout: int = 20) -> object:
         return json.loads(response.read().decode(charset, errors="replace"))
 
 
+def normalize_source(source: str) -> str:
+    parsed_source = urlparse(source)
+    if parsed_source.scheme.lower() in {"http", "https", "file"}:
+        return source
+
+    local_path = Path(source).expanduser()
+    if local_path.is_file():
+        return local_path.resolve().as_uri()
+    if local_path.exists():
+        raise IsADirectoryError(f"Local input is not a file: {source}")
+    if parsed_source.scheme:
+        return source
+    raise FileNotFoundError(f"Local HTML file not found: {source}")
+
+
 @lru_cache(maxsize=1)
 def https_context() -> ssl.SSLContext | None:
     try:
@@ -182,6 +197,8 @@ def https_context() -> ssl.SSLContext | None:
 
 
 def extract_url(url: str, *, timeout: int = 20, allow_fallback: bool = False) -> Article:
+    url = normalize_source(url)
+
     if is_hacker_news_item_url(url):
         try:
             return extract_hacker_news_item_from_url(url, timeout=timeout)

@@ -208,7 +208,7 @@ def run_doctor() -> int:
 
 def run_convert(args: argparse.Namespace) -> int:
     if not args.urls:
-        print("error: at least one URL is required", file=sys.stderr)
+        print("error: at least one URL or local HTML path is required", file=sys.stderr)
         return 2
 
     reporter = ProgressReporter()
@@ -273,7 +273,11 @@ def run_convert(args: argparse.Namespace) -> int:
 
 
 def add_convert_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("urls", nargs="*", help="One or more HTTP(S) URLs.")
+    parser.add_argument(
+        "urls",
+        nargs="*",
+        help="One or more HTTP(S) URLs or local HTML file paths.",
+    )
     parser.add_argument("-o", "--output", help="Output filename.")
     parser.add_argument("--title", help="Override the book title.")
     parser.add_argument(
@@ -312,7 +316,7 @@ def add_convert_arguments(parser: argparse.ArgumentParser) -> None:
 def build_root_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="url2epub",
-        description="Fetch one or more URLs and package them into an EPUB or PDF.",
+        description="Convert URLs or local HTML files into an EPUB or PDF.",
     )
     parser.add_argument(
         "command",
@@ -326,7 +330,7 @@ def build_root_parser() -> argparse.ArgumentParser:
 def build_convert_parser(prog: str = "url2epub") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=prog,
-        description="Fetch one or more URLs and package them into an EPUB or PDF.",
+        description="Convert URLs or local HTML files into an EPUB or PDF.",
     )
     add_convert_arguments(parser)
     return parser

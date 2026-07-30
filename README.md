@@ -1,6 +1,6 @@
 # url2epub
 
-`url2epub` is a small Python CLI that fetches one or more web pages, extracts readable article content, and packages the result as an EPUB or printable PDF.
+`url2epub` is a small Python CLI that reads web pages or local HTML files, extracts readable article content, and packages the result as an EPUB or printable PDF.
 
 ## Requirements
 
@@ -92,6 +92,15 @@ Convert a single URL:
 url2epub "https://example.com/article"
 ```
 
+Convert a local HTML file using a relative or absolute path:
+
+```bash
+url2epub ./article.html
+url2epub /path/to/article.html --output article.epub
+```
+
+Relative image references in local HTML are resolved from the HTML file's directory.
+
 The explicit subcommand form also works:
 
 ```bash
@@ -106,6 +115,7 @@ Generate a printable PDF instead of an EPUB:
 
 ```bash
 url2epub --pdf "https://news.ycombinator.com/item?id=123"
+url2epub --pdf ./article.html --output article.pdf
 ```
 
 PDF generation uses Typst by default for cleaner book-like typography: Charter for body text, Inter for headings, JetBrains Mono for code, and Noto fallbacks for CJK and emoji text.
