@@ -16,6 +16,7 @@ import ssl
 import subprocess
 import tempfile
 from typing import Iterable
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urljoin, urlparse
 from urllib.request import Request, urlopen
 
@@ -27,6 +28,8 @@ USER_AGENT = (
 
 EPUB_AUTHOR = "URL2EPUB"
 HN_API_BASE = "https://hacker-news.firebaseio.com/v0"
+JINA_READER_BASE = "https://r.jina.ai"
+JINA_READER_USER_AGENT = "url2epub/0.1"
 
 BLOCKED_TAGS = {
     "script",
@@ -154,6 +157,24 @@ def fetch_html(url: str, timeout: int = 20) -> str:
             "Accept": "text/html,application/xhtml+xml",
         },
     )
+    try:
+        return read_html_response(request, timeout)
+    except HTTPError as exc:
+        if exc.code not in {403, 429} or not is_medium_url(url):
+            raise
+
+    reader_request = Request(
+        f"{JINA_READER_BASE}/{url}",
+        headers={
+            "User-Agent": JINA_READER_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml",
+            "X-Return-Format": "html",
+        },
+    )
+    return read_html_response(reader_request, timeout)
+
+
+def read_html_response(request: Request, timeout: int) -> str:
     with urlopen(request, timeout=timeout, context=https_context()) as response:
         charset = response.headers.get_content_charset() or "utf-8"
         return response.read().decode(charset, errors="replace")
@@ -401,6 +422,12 @@ def typst_command() -> list[str] | None:
 def is_wechat_url(url: str) -> bool:
     host = urlparse(url).netloc.lower()
     return host == "mp.weixin.qq.com" or host.endswith(".mp.weixin.qq.com")
+
+
+def is_medium_url(url: str) -> bool:
+    host = urlparse(url).hostname or ""
+    host = host.lower()
+    return host == "medium.com" or host.endswith(".medium.com")
 
 
 def is_hacker_news_item_url(url: str) -> bool:

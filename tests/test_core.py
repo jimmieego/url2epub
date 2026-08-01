@@ -2,8 +2,9 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import subprocess
+from urllib.error import HTTPError
 
 from url2epub.core import (
     DefuddleError,
@@ -16,8 +17,10 @@ from url2epub.core import (
     extract_article,
     extract_hacker_news_item_from_url,
     extract_url,
+    fetch_html,
     hacker_news_item_id,
     is_hacker_news_item_url,
+    is_medium_url,
     is_wechat_url,
     localize_article_images,
     normalize_source,
@@ -127,6 +130,57 @@ class CoreTests(unittest.TestCase):
     def test_is_wechat_url_detects_mp_domain(self) -> None:
         self.assertTrue(is_wechat_url("https://mp.weixin.qq.com/s/example"))
         self.assertFalse(is_wechat_url("https://example.com/story"))
+
+    def test_is_medium_url_detects_medium_domains(self) -> None:
+        self.assertTrue(is_medium_url("https://medium.com/@author/story"))
+        self.assertTrue(is_medium_url("https://author.medium.com/story"))
+        self.assertFalse(is_medium_url("https://notmedium.com/story"))
+
+    def test_fetch_html_retries_blocked_medium_url_through_reader(self) -> None:
+        url = "https://author.medium.com/example-story-123"
+        for status in (403, 429):
+            with self.subTest(status=status):
+                response = MagicMock()
+                response.headers.get_content_charset.return_value = "utf-8"
+                response.read.return_value = b"<html><article>Example</article></html>"
+                response.__enter__.return_value = response
+                blocked = HTTPError(url, status, "Blocked", {}, None)
+
+                with patch(
+                    "url2epub.core.urlopen",
+                    side_effect=[blocked, response],
+                ) as urlopen_mock:
+                    html = fetch_html(url, timeout=7)
+
+                self.assertIn("<article>Example</article>", html)
+                self.assertEqual(urlopen_mock.call_count, 2)
+                reader_request = urlopen_mock.call_args_list[1].args[0]
+                self.assertEqual(reader_request.full_url, f"https://r.jina.ai/{url}")
+                self.assertEqual(reader_request.get_header("User-agent"), "url2epub/0.1")
+                self.assertEqual(reader_request.get_header("X-return-format"), "html")
+                self.assertEqual(urlopen_mock.call_args_list[1].kwargs["timeout"], 7)
+
+    def test_fetch_html_does_not_retry_rate_limited_non_medium_url(self) -> None:
+        url = "https://example.com/story"
+        rate_limit = HTTPError(url, 429, "Too Many Requests", {}, None)
+
+        with patch("url2epub.core.urlopen", side_effect=rate_limit) as urlopen_mock:
+            with self.assertRaises(HTTPError) as raised:
+                fetch_html(url)
+
+        self.assertIs(raised.exception, rate_limit)
+        urlopen_mock.assert_called_once()
+
+    def test_fetch_html_does_not_retry_other_medium_http_errors(self) -> None:
+        url = "https://author.medium.com/missing"
+        not_found = HTTPError(url, 404, "Not Found", {}, None)
+
+        with patch("url2epub.core.urlopen", side_effect=not_found) as urlopen_mock:
+            with self.assertRaises(HTTPError) as raised:
+                fetch_html(url)
+
+        self.assertIs(raised.exception, not_found)
+        urlopen_mock.assert_called_once()
 
     def test_is_hacker_news_item_url_detects_item_pages(self) -> None:
         self.assertTrue(is_hacker_news_item_url("https://news.ycombinator.com/item?id=123"))

@@ -186,6 +186,7 @@ GitHub Actions runs the same basic checks on pushes and pull requests:
 ## Notes
 
 - Defuddle is the default extraction engine and is required unless you pass `--allow-fallback`.
+- Medium pages that reject the direct request with HTTP 403 or 429 are retried through the public Jina Reader service.
 - WeChat article URLs are detected automatically and use `wechat-article-to-markdown` when installed.
 - EPUB and PDF generation are handled by Pandoc.
 - Images are downloaded locally and rewritten before the EPUB or PDF is built so Pandoc can embed them.
