@@ -32,6 +32,7 @@ from url2epub.core import (
     Article,
     render_article_markdown,
     TYPST_STYLE,
+    typst_document_metadata,
 )
 
 
@@ -288,7 +289,6 @@ class CoreTests(unittest.TestCase):
             ):
                 book_path = build_html_book(
                     Path(tmpdir),
-                    "Image Example",
                     [article],
                     "en",
                 )
@@ -511,7 +511,7 @@ class CoreTests(unittest.TestCase):
         rendered = render_article_markdown(article)
 
         self.assertEqual(rendered.count("# Example Story"), 1)
-        self.assertIn("[Source](https://example.com/story)", rendered)
+        self.assertIn("Source: <https://example.com/story>", rendered)
         self.assertIn("Body paragraph.", rendered)
         self.assertNotIn("> 公众号:", rendered)
 
@@ -538,7 +538,63 @@ class CoreTests(unittest.TestCase):
         self.assertIn("--pdf-engine", command)
         self.assertIn("weasyprint", command)
         self.assertIn("author=URL2EPUB", command)
+        self.assertIn("pagetitle=Printable Story", command)
+        self.assertNotIn("title=Printable Story", command)
+        self.assertNotIn("--toc", command)
         self.assertNotIn("--include-before-body", command)
+
+    def test_build_pdf_adds_contents_for_multiple_articles(self) -> None:
+        articles = [
+            Article(
+                title=f"Story {index}",
+                source_url=f"https://example.com/story-{index}",
+                content_html="<p>Example content.</p>",
+            )
+            for index in range(2)
+        ]
+
+        with TemporaryDirectory() as tmpdir, patch(
+            "url2epub.core.pandoc_command",
+            return_value=["pandoc"],
+        ), patch("url2epub.core.subprocess.run") as run_mock:
+            build_pdf(articles, Path(tmpdir) / "book.pdf", pdf_engine="weasyprint")
+
+        command = run_mock.call_args.args[0]
+        self.assertIn("--toc", command)
+        self.assertNotIn("title=Story 0", command)
+
+    def test_build_epub_keeps_title_page_and_contents(self) -> None:
+        article = Article(
+            title="Printable Story",
+            source_url="https://example.com/story",
+            content_html="<p>Example content.</p>",
+        )
+
+        with TemporaryDirectory() as tmpdir, patch(
+            "url2epub.core.pandoc_command",
+            return_value=["pandoc"],
+        ), patch("url2epub.core.subprocess.run") as run_mock:
+            build_epub([article], Path(tmpdir) / "book.epub")
+
+        command = run_mock.call_args.args[0]
+        self.assertIn("--toc", command)
+        self.assertIn("title=Printable Story", command)
+
+    def test_render_article_section_html_shows_source_url(self) -> None:
+        article = Article(
+            title="Example",
+            source_url="https://example.com/story?a=1&b=2",
+            content_html="<p>Body.</p>",
+        )
+
+        rendered = render_article_section_html(article)
+
+        self.assertIn(
+            'Source: <a href="https://example.com/story?a=1&amp;b=2">'
+            "https://example.com/story?a=1&amp;b=2</a>",
+            rendered,
+        )
+        self.assertNotIn(">Source</a>", rendered)
 
     def test_build_pdf_defaults_to_typst_with_type_style(self) -> None:
         article = Article(
@@ -567,10 +623,21 @@ class CoreTests(unittest.TestCase):
         self.assertIn("--pdf-engine", command)
         self.assertIn("/tools/typst", command)
         self.assertIn("--include-before-body", command)
+        self.assertNotIn("title=Printable Story", command)
+        self.assertNotIn("--toc", command)
         self.assertIn('"Charter"', captured_style["content"])
         self.assertIn('"Inter"', captured_style["content"])
         self.assertIn('"JetBrains Mono"', captured_style["content"])
-        self.assertEqual(captured_style["content"], TYPST_STYLE)
+        self.assertTrue(captured_style["content"].startswith(TYPST_STYLE))
+        self.assertIn(
+            '#set document(title: "Printable Story")',
+            captured_style["content"],
+        )
+
+    def test_typst_document_metadata_escapes_title(self) -> None:
+        rendered = typst_document_metadata('Say "hi" \\ bye')
+
+        self.assertIn('#set document(title: "Say \\"hi\\" \\\\ bye")', rendered)
 
 
 if __name__ == "__main__":

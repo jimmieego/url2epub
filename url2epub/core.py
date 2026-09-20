@@ -693,26 +693,42 @@ def build_with_pandoc(
         resolved_pdf_engine = resolve_pdf_engine(pdf_engine)
         use_typst = output_format == "pdf" and is_typst_engine(resolved_pdf_engine)
         if use_typst:
-            typst_style_path.write_text(TYPST_STYLE, encoding="utf-8")
-        html_book = build_html_book(tmp, title, article_list, language)
+            typst_style_path.write_text(
+                TYPST_STYLE + typst_document_metadata(title),
+                encoding="utf-8",
+            )
+        html_book = build_html_book(tmp, article_list, language)
         command = [
             *pandoc,
             str(html_book),
             "--from=html",
             "--to=typst" if use_typst else f"--to={output_format}",
             "--standalone",
-            "--toc",
-            "--metadata",
-            f"title={title}",
-            "--metadata",
-            f"author={EPUB_AUTHOR}",
-            "--metadata",
-            f"lang={language}",
-            "--resource-path",
-            str(tmp),
-            "--output",
-            str(output),
         ]
+        # A printed PDF should start on the article itself. Pandoc renders a
+        # title page whenever `title` metadata is set, so PDFs only get the
+        # document title through `pagetitle` (HTML engines) or the Typst
+        # `#set document` rule, and only multi-article books get a contents
+        # page.
+        if output_format == "pdf":
+            if len(article_list) > 1:
+                command.append("--toc")
+            if not use_typst:
+                command.extend(["--metadata", f"pagetitle={title}"])
+        else:
+            command.extend(["--toc", "--metadata", f"title={title}"])
+        command.extend(
+            [
+                "--metadata",
+                f"author={EPUB_AUTHOR}",
+                "--metadata",
+                f"lang={language}",
+                "--resource-path",
+                str(tmp),
+                "--output",
+                str(output),
+            ]
+        )
         if use_typst:
             command.extend(["--include-before-body", str(typst_style_path)])
         else:
@@ -742,7 +758,6 @@ def build_with_pandoc(
 
 def build_html_book(
     workspace: Path,
-    title: str,
     articles: list[Article],
     language: str,
 ) -> Path:
@@ -763,12 +778,14 @@ def build_html_book(
 
     book_path = workspace / "book.html"
     body = "\n".join(sections)
+    # No <title> here on purpose: Pandoc's HTML reader would turn it into
+    # `title` metadata, which renders a title page. The book title is passed
+    # explicitly via --metadata where a title page is wanted (EPUB).
     book_path.write_text(
         f"""<!DOCTYPE html>
 <html lang="{escape(language)}">
   <head>
     <meta charset="utf-8"/>
-    <title>{escape(title)}</title>
   </head>
   <body>
 {body}
@@ -845,7 +862,7 @@ def render_article_markdown(article: Article) -> str:
     if article.author:
         parts.append(f"*By {article.author}*")
         parts.append("")
-    parts.append(f"[Source]({article.source_url})")
+    parts.append(f"Source: <{article.source_url}>")
     parts.append("")
     parts.append(body.strip())
     parts.append("")
@@ -856,11 +873,12 @@ def render_article_section_html(article: Article) -> str:
     byline = f"<p><em>By {escape(article.author)}</em></p>" if article.author else ""
     content = remove_footnote_backlinks(article.content_html or "")
     content = replace_unsupported_embeds(content)
+    source_url = escape(article.source_url, quote=True)
     return (
         "<section>"
         f"<h1>{escape(article.title)}</h1>"
         f"{byline}"
-        f'<p><a href="{escape(article.source_url, quote=True)}">Source</a></p>'
+        f'<p>Source: <a href="{source_url}">{source_url}</a></p>'
         f"{content}"
         "</section>"
     )
@@ -1276,6 +1294,12 @@ def css_for_format(output_format: str) -> str:
     if output_format == "pdf":
         return PDF_CSS
     return DEFAULT_CSS
+
+
+def typst_document_metadata(title: str) -> str:
+    """Set the PDF document title without rendering Pandoc's title page."""
+    escaped = title.replace("\\", "\\\\").replace('"', '\\"')
+    return f'\n#set document(title: "{escaped}")\n'
 
 
 IMG_TAG_RE = re.compile(
